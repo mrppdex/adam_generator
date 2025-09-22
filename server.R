@@ -13,6 +13,8 @@ library(readr)
 library(DT)
 library(rlang)
 library(tools)
+library(arrow)
+library(coastr)
 
 # Define the server logic
 shinyServer(function(input, output, session) {
@@ -44,6 +46,7 @@ shinyServer(function(input, output, session) {
             
             tryCatch({
                 df <- switch(file_ext(file$name),
+                    "sas7bdat" = import_cluwe_data(file$datapath) %>% rename_all(tolower),
                     "csv" = read_csv(file$datapath, show_col_types = FALSE),
                     "xpt" = read_xpt(file$datapath)
                 )
@@ -209,7 +212,8 @@ shinyServer(function(input, output, session) {
         map(names(adam_data$datasets), function(name) {
             fluidRow(column(12, h3(name),
                 downloadButton(paste0("download_", name), "Download as CSV"),
-                downloadButton(paste0("download_xpt_", name), "Download as XPT"),
+                downloadButton(paste0("download_rds_", name), "Download as RDS"),
+                downloadButton(paste0("download_parquet_", name), "Download as Parquet"),
                 hr(), DTOutput(paste0("table_", name)), hr()
             ))
         })
@@ -222,9 +226,14 @@ shinyServer(function(input, output, session) {
                 filename = function() { paste0(tolower(name), ".csv") },
                 content = function(file) { write_csv(adam_data$datasets[[name]], file) }
             )
-            output[[paste0("download_xpt_", name)]] <- downloadHandler(
+
+             output[[paste0("download_rds_", name)]] <- downloadHandler(
                 filename = function() { paste0(tolower(name), ".xpt") },
-                content = function(file) { write_xpt(adam_data$datasets[[name]], file) }
+                content = function(file) { write_rds(adam_data$datasets[[name]], file) }
+            )
+            output[[paste0("download_parquet_", name)]] <- downloadHandler(
+                filename = function() { paste0(tolower(name), ".xpt") },
+                content = function(file) { write_parquet(adam_data$datasets[[name]], file) }
             )
             output[[paste0("table_", name)]] <- renderDT({
                 datatable(adam_data$datasets[[name]], options = list(scrollX = TRUE, pageLength = 5), rownames = FALSE)
