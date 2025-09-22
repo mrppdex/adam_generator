@@ -91,42 +91,61 @@ shinyServer(function(input, output, session) {
         # 5. Loop through each ADaM spec and generate the dataset
         walk(adam_specs, function(adam_spec) {
             tryCatch({
-                log_message(sprintf("--- Generating: %s ---", adam_spec$name))
+                current_adam_name <- adam_spec$name
+                log_message(sprintf("--- Generating: %s ---", current_adam_name))
 
-                # Identify all unique source datasets required for this ADaM dataset
-                source_names <- adam_spec$columns %>%
+                # Identify all unique source domains from the spec
+                all_source_domains <- adam_spec$columns %>%
                     map("derivation") %>%
                     map("sources") %>%
                     unlist() %>%
                     map_chr(~ strsplit(.x, "\\.")[[1]][1]) %>%
                     unique()
 
-                log_message(paste("Required sources:", paste(source_names, collapse = ", ")))
+                # **FIX**: Distinguish between external SDTM sources and internal ADaM sources (itself)
+                external_source_names <- setdiff(all_source_domains, current_adam_name)
                 
-                # Check if all required source datasets have been uploaded
-                missing_sources <- setdiff(source_names, names(sdtm_data$datasets))
+                log_message(paste("Required external sources:", paste(external_source_names, collapse = ", ")))
+                
+                # Check if all required *external* source datasets have been uploaded
+                missing_sources <- setdiff(external_source_names, names(sdtm_data$datasets))
                 if (length(missing_sources) > 0) {
                     stop(paste("Missing required source data for:", paste(missing_sources, collapse = ", ")))
                 }
                 
-                # Heuristic to find the "base" dataset (most common source) to start the join
-                # This is typically the subject-level dataset like DM or ADSL (if it were a source).
-                base_dataset_name <- names(which.max(table(unlist(map(adam_spec$columns, ~.x$derivation$sources)))))
-                base_dataset_name <- strsplit(base_dataset_name, "\\.")[[1]][1]
-                
+                # An ADaM dataset must be built from at least one external SDTM source.
+                if (length(external_source_names) == 0) {
+                    stop(paste("Specification for", current_adam_name, "does not list any external SDTM sources. Cannot generate from nothing."))
+                }
+
+                # **FIX**: Determine the base dataset for joining from EXTERNAL sources only.
+                # Find the most frequently mentioned external source to use as the base for the join.
+                all_external_sources_list <- adam_spec$columns %>%
+                    map("derivation") %>%
+                    map("sources") %>%
+                    unlist() %>%
+                    keep(~ .x %in% paste0(external_source_names, ".", unlist(map(sdtm_data$datasets[external_source_names], names)))) %>% # A more robust way to filter
+                    map_chr(~ strsplit(.x, "\\.")[[1]][1])
+
+                if (length(all_external_sources_list) == 0) {
+                   # Fallback to the first available external source if frequency logic fails
+                   base_dataset_name <- external_source_names[1]
+                } else {
+                   base_dataset_name <- names(which.max(table(all_external_sources_list)))
+                }
+
                 log_message(paste("Using", base_dataset_name, "as the base for joining."))
                 
                 # Start with the base dataset
                 merged_df <- sdtm_data$datasets[[base_dataset_name]]
                 
                 # Sequentially left_join the other required source datasets
-                other_sources <- setdiff(source_names, base_dataset_name)
+                other_sources <- setdiff(external_source_names, base_dataset_name)
                 if(length(other_sources > 0)) {
                   for (source in other_sources) {
                       log_message(paste("Joining with", source))
-                      # A common-sense join by standard CDISC keys. This may need adjustment
-                      # for complex, non-standard joins.
-                      merged_df <- left_join(merged_df, sdtm_data$datasets[[source]], by = c("STUDYID", "USUBJID"))
+                      # A common-sense join by standard CDISC keys.
+                      merged_df <- left_join(merged_df, sdtm_data$datasets[[source]], by = intersect(names(merged_df), names(sdtm_data$datasets[[source]])))
                   }
                 }
 
@@ -225,3 +244,4 @@ shinyServer(function(input, output, session) {
         })
     })
 })
+
