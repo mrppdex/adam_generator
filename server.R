@@ -13,7 +13,6 @@ library(readr)
 library(DT)
 library(rlang)
 library(tools)
-library(coastr)
 
 # Define the server logic
 shinyServer(function(input, output, session) {
@@ -45,7 +44,6 @@ shinyServer(function(input, output, session) {
             
             tryCatch({
                 df <- switch(file_ext(file$name),
-                    "sas7bdat" = import_cluwe_data(file$datapath) %>% rename_all(tolower),
                     "csv" = read_csv(file$datapath, show_col_types = FALSE),
                     "xpt" = read_xpt(file$datapath)
                 )
@@ -139,7 +137,6 @@ shinyServer(function(input, output, session) {
                 other_sources <- setdiff(external_source_names, base_dataset_name)
                 if(length(other_sources > 0)) {
                   for (source in other_sources) {
-                      # **FIX**: Determine keys for this specific join
                       join_keys_spec <- adam_spec$join_keys
                       
                       if (is.null(join_keys_spec) || length(join_keys_spec) == 0) {
@@ -177,8 +174,20 @@ shinyServer(function(input, output, session) {
                     }
                 }
                 
+                # Select only the columns specified for the final dataset
                 final_adam_cols <- map_chr(adam_spec$columns, "name")
                 final_df <- derived_df %>% select(any_of(final_adam_cols))
+
+                # **FIX**: Handle one-row-per-subject requirement
+                if (!is.null(adam_spec$one_row_per_subject) && adam_spec$one_row_per_subject) {
+                    log_message("Dataset is one-row-per-subject. Removing duplicate subject entries.")
+                    if ("USUBJID" %in% names(final_df)) {
+                        final_df <- final_df %>%
+                            distinct(USUBJID, .keep_all = TRUE)
+                    } else {
+                        log_message("--> WARNING: 'USUBJID' not found in the final dataset. Cannot enforce one-row-per-subject rule.")
+                    }
+                }
                 
                 adam_data$datasets[[adam_spec$name]] <- final_df
                 log_message(sprintf("--- Successfully generated '%s' with %d rows and %d columns. ---",
