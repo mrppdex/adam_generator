@@ -13,6 +13,7 @@ library(readr)
 library(DT)
 library(rlang)
 library(tools)
+library(coastr)
 
 # Define the server logic
 shinyServer(function(input, output, session) {
@@ -44,6 +45,7 @@ shinyServer(function(input, output, session) {
             
             tryCatch({
                 df <- switch(file_ext(file$name),
+                    "sas7bdat" = import_cluwe_data(file$datapath) %>% rename_all(tolower),
                     "csv" = read_csv(file$datapath, show_col_types = FALSE),
                     "xpt" = read_xpt(file$datapath)
                 )
@@ -102,7 +104,7 @@ shinyServer(function(input, output, session) {
                     map_chr(~ strsplit(.x, "\\.")[[1]][1]) %>%
                     unique()
 
-                # **FIX**: Distinguish between external SDTM sources and internal ADaM sources (itself)
+                # Distinguish between external SDTM sources and internal ADaM sources (itself)
                 external_source_names <- setdiff(all_source_domains, current_adam_name)
                 
                 log_message(paste("Required external sources:", paste(external_source_names, collapse = ", ")))
@@ -113,22 +115,17 @@ shinyServer(function(input, output, session) {
                     stop(paste("Missing required source data for:", paste(missing_sources, collapse = ", ")))
                 }
                 
-                # An ADaM dataset must be built from at least one external SDTM source.
                 if (length(external_source_names) == 0) {
-                    stop(paste("Specification for", current_adam_name, "does not list any external SDTM sources. Cannot generate from nothing."))
+                    stop(paste("Specification for", current_adam_name, "does not list any external SDTM sources."))
                 }
 
-                # **FIX**: Determine the base dataset for joining from EXTERNAL sources only.
                 # Find the most frequently mentioned external source to use as the base for the join.
                 all_external_sources_list <- adam_spec$columns %>%
-                    map("derivation") %>%
-                    map("sources") %>%
-                    unlist() %>%
-                    keep(~ .x %in% paste0(external_source_names, ".", unlist(map(sdtm_data$datasets[external_source_names], names)))) %>% # A more robust way to filter
-                    map_chr(~ strsplit(.x, "\\.")[[1]][1])
+                    map("derivation") %>% map("sources") %>% unlist() %>%
+                    map_chr(~ strsplit(.x, "\\.")[[1]][1]) %>%
+                    keep(~ .x %in% external_source_names)
 
                 if (length(all_external_sources_list) == 0) {
-                   # Fallback to the first available external source if frequency logic fails
                    base_dataset_name <- external_source_names[1]
                 } else {
                    base_dataset_name <- names(which.max(table(all_external_sources_list)))
@@ -136,31 +133,41 @@ shinyServer(function(input, output, session) {
 
                 log_message(paste("Using", base_dataset_name, "as the base for joining."))
                 
-                # Start with the base dataset
                 merged_df <- sdtm_data$datasets[[base_dataset_name]]
                 
                 # Sequentially left_join the other required source datasets
                 other_sources <- setdiff(external_source_names, base_dataset_name)
                 if(length(other_sources > 0)) {
                   for (source in other_sources) {
-                      log_message(paste("Joining with", source))
-                      # A common-sense join by standard CDISC keys.
-                      merged_df <- left_join(merged_df, sdtm_data$datasets[[source]], by = intersect(names(merged_df), names(sdtm_data$datasets[[source]])))
+                      # **FIX**: Determine keys for this specific join
+                      join_keys_spec <- adam_spec$join_keys
+                      
+                      if (is.null(join_keys_spec) || length(join_keys_spec) == 0) {
+                          log_message("WARNING: 'join_keys' not specified in YAML. Defaulting to common CDISC keys.")
+                          default_keys <- c("STUDYID", "USUBJID", "SUBJID", "SITEID")
+                          keys_to_use <- intersect(default_keys, intersect(names(merged_df), names(sdtm_data$datasets[[source]])))
+                      } else {
+                          keys_to_use <- intersect(join_keys_spec, intersect(names(merged_df), names(sdtm_data$datasets[[source]])))
+                      }
+
+                      if (length(keys_to_use) == 0) {
+                          stop(sprintf("Cannot join '%s' with '%s'. No common keys found based on spec or defaults.",
+                                       base_dataset_name, source))
+                      }
+                      
+                      log_message(sprintf("Joining with '%s' using keys: [%s]", source, paste(keys_to_use, collapse=", ")))
+                      merged_df <- left_join(merged_df, sdtm_data$datasets[[source]], by = keys_to_use)
                   }
                 }
 
                 log_message("All sources merged. Applying column derivations...")
 
-                # Apply derivations column by column
-                # This approach is robust to errors in one derivation.
                 derived_df <- merged_df
                 for (col in adam_spec$columns) {
                     logic <- col$derivation$logic
                     if (!is.null(logic) && logic != "") {
                         log_message(paste("Deriving column:", col$name))
                         tryCatch({
-                            # Use dplyr::mutate with rlang's := and parse_expr for robust
-                            # programmatic creation of columns from text expressions.
                             derived_df <- derived_df %>%
                                 mutate(!!col$name := !!parse_expr(logic))
                         }, error = function(e) {
@@ -170,7 +177,6 @@ shinyServer(function(input, output, session) {
                     }
                 }
                 
-                # Select only the columns specified for the final dataset
                 final_adam_cols <- map_chr(adam_spec$columns, "name")
                 final_df <- derived_df %>% select(any_of(final_adam_cols))
                 
@@ -183,63 +189,36 @@ shinyServer(function(input, output, session) {
             })
         })
         
-        # Switch the view to the results tab
         updateTabsetPanel(session, "main_tabs", selected = "Generated ADaM Datasets")
     })
 
     # --- Dynamic UI and Output Rendering ---
+    output$log_output <- renderText({ paste(log_messages$log, collapse = "\n") })
 
-    # Render the processing log
-    output$log_output <- renderText({
-        paste(log_messages$log, collapse = "\n")
-    })
-
-    # Dynamically create UI elements (previews and download buttons) for each
-    # generated ADaM dataset.
     output$adam_outputs <- renderUI({
         req(length(adam_data$datasets) > 0)
-
-        # Create a UI block for each dataset
         map(names(adam_data$datasets), function(name) {
-            fluidRow(
-                column(12,
-                    h3(name),
-                    # Each download button and table needs a unique ID
-                    downloadButton(paste0("download_", name), "Download as CSV"),
-                    downloadButton(paste0("download_xpt_", name), "Download as XPT"),
-                    hr(),
-                    DTOutput(paste0("table_", name)),
-                    hr()
-                )
-            )
+            fluidRow(column(12, h3(name),
+                downloadButton(paste0("download_", name), "Download as CSV"),
+                downloadButton(paste0("download_xpt_", name), "Download as XPT"),
+                hr(), DTOutput(paste0("table_", name)), hr()
+            ))
         })
     })
 
-    # Dynamically create the server-side logic for the download handlers and
-    # table previews for each generated dataset.
     observe({
         req(length(adam_data$datasets) > 0)
-
         walk(names(adam_data$datasets), function(name) {
-            # Logic for CSV download
             output[[paste0("download_", name)]] <- downloadHandler(
                 filename = function() { paste0(tolower(name), ".csv") },
-                content = function(file) {
-                    write_csv(adam_data$datasets[[name]], file)
-                }
+                content = function(file) { write_csv(adam_data$datasets[[name]], file) }
             )
-            # Logic for XPT download
             output[[paste0("download_xpt_", name)]] <- downloadHandler(
                 filename = function() { paste0(tolower(name), ".xpt") },
-                content = function(file) {
-                    write_xpt(adam_data$datasets[[name]], file)
-                }
+                content = function(file) { write_xpt(adam_data$datasets[[name]], file) }
             )
-            # Logic for rendering the preview table
             output[[paste0("table_", name)]] <- renderDT({
-                datatable(adam_data$datasets[[name]],
-                          options = list(scrollX = TRUE, pageLength = 5),
-                          rownames = FALSE)
+                datatable(adam_data$datasets[[name]], options = list(scrollX = TRUE, pageLength = 5), rownames = FALSE)
             })
         })
     })
