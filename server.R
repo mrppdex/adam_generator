@@ -94,7 +94,7 @@ shinyServer(function(input, output, session) {
                 current_adam_name <- adam_spec$name
                 log_message(sprintf("--- Generating: %s ---", current_adam_name))
 
-                # **FIX**: Identify all required source COLUMNS from the derivations
+                # Identify all required source COLUMNS from the derivations
                 required_cols_by_domain <- adam_spec$columns %>%
                     map("derivation") %>% map("sources") %>% unlist() %>%
                     # Keep only external sources
@@ -102,8 +102,10 @@ shinyServer(function(input, output, session) {
                     # Parse into a data frame of Domain and Column
                     map_df(~ data.frame(source_str = .x)) %>%
                     mutate(
-                        DOMAIN = toupper(str_extract(source_str, "^[^\\.]+")),
-                        COLUMN = str_extract(source_str, "(?<=\\.).*$")
+                        # FIX: Use a more robust method to split the source string to avoid regex errors.
+                        # This splits "DM.USUBJID" into "DM" and "USUBJID".
+                        DOMAIN = toupper(gsub("\\..*$", "", source_str)),
+                        COLUMN = gsub("^[^.]*\\.", "", source_str)
                     ) %>%
                     # Group by domain and collect unique column names
                     group_by(DOMAIN) %>%
@@ -127,7 +129,7 @@ shinyServer(function(input, output, session) {
                 base_dataset_name <- names(which.max(map_int(required_cols_by_domain, length)))
                 log_message(paste("Using", base_dataset_name, "as the base for joining."))
                 
-                # **FIX**: Start with the base dataset, pre-selecting only necessary columns
+                # Start with the base dataset, pre-selecting only necessary columns
                 join_keys_spec <- adam_spec$join_keys
                 if (is.null(join_keys_spec) || length(join_keys_spec) == 0) {
                     default_keys <- c("STUDYID", "USUBJID", "SUBJID", "SITEID")
