@@ -49,6 +49,8 @@ shinyServer(function(input, output, session) {
                     "xpt" = read_xpt(file$datapath),
                     "sas7bdat" = read_sas(file$datapath)
                 )
+                # Convert all column names to lowercase upon loading
+                df <- df %>% rename_with(tolower)
                 sdtm_data$datasets[[dataset_name]] <- df
                 log_message(sprintf("Successfully loaded '%s' with %d rows and %d columns.",
                                     file$name, nrow(df), ncol(df)))
@@ -137,13 +139,15 @@ shinyServer(function(input, output, session) {
                 join_keys_spec <- adam_spec$join_keys
                 if (is.null(join_keys_spec) || length(join_keys_spec) == 0) {
                     log_message("WARNING: 'join_keys' not specified. Defaulting to common CDISC keys.")
-                    default_keys <- c("STUDYID", "USUBJID", "SUBJID", "SITEID")
+                    # Use lowercase for default keys
+                    default_keys <- c("studyid", "usubjid", "subjid", "siteid")
                     keys_to_use <- intersect(default_keys, names(sdtm_data$datasets[[base_dataset_name]]))
                 } else {
-                    keys_to_use <- join_keys_spec
+                    # Convert specified join keys to lowercase
+                    keys_to_use <- tolower(join_keys_spec)
                 }
                 
-                # **FIX**: Rename columns in the base dataset before starting the merge
+                # Rename columns in the base dataset before starting the merge
                 base_df <- sdtm_data$datasets[[base_dataset_name]]
                 cols_to_rename_base <- setdiff(names(base_df), keys_to_use)
                 new_names_base <- paste0(tolower(base_dataset_name), "_", cols_to_rename_base)
@@ -158,7 +162,7 @@ shinyServer(function(input, output, session) {
                   for (source in other_sources) {
                       source_df <- sdtm_data$datasets[[source]]
                       
-                      # **FIX**: Rename columns in the incoming dataset before joining
+                      # Rename columns in the incoming dataset before joining
                       cols_to_rename_source <- setdiff(names(source_df), keys_to_use)
                       new_names_source <- paste0(tolower(source), "_", cols_to_rename_source)
                       
@@ -182,34 +186,37 @@ shinyServer(function(input, output, session) {
                 derived_df <- merged_df
                 for (col in adam_spec$columns) {
                     logic <- col$derivation$logic
+                    # Create the new column with a lowercase name
+                    col_name_lower <- tolower(col$name)
                     if (!is.null(logic) && logic != "") {
-                        log_message(paste("Deriving column:", col$name))
+                        log_message(paste("Deriving column:", col_name_lower))
                         tryCatch({
                             derived_df <- derived_df %>%
-                                mutate(!!col$name := !!parse_expr(logic))
+                                mutate(!!col_name_lower := !!parse_expr(logic))
                         }, error = function(e) {
                              log_message(sprintf("--> WARNING: Failed to derive '%s'. Logic: '%s'. Error: %s",
-                                                col$name, logic, e$message))
+                                                col_name_lower, logic, e$message))
                         })
                     }
                 }
                 
-                # Select only the columns specified for the final dataset
-                final_adam_cols <- map_chr(adam_spec$columns, "name")
+                # Select only the columns specified for the final dataset (in lowercase)
+                final_adam_cols <- tolower(map_chr(adam_spec$columns, "name"))
                 final_df <- derived_df %>% select(any_of(final_adam_cols))
 
                 # Handle one-row-per-subject requirement
                 if (!is.null(adam_spec$one_row_per_subject) && adam_spec$one_row_per_subject) {
                     log_message("Dataset is one-row-per-subject. Removing duplicate subject entries.")
-                    if ("USUBJID" %in% names(final_df)) {
+                    # Check for "usubjid" in lowercase
+                    if ("usubjid" %in% names(final_df)) {
                         final_df <- final_df %>%
-                            distinct(USUBJID, .keep_all = TRUE)
+                            distinct(usubjid, .keep_all = TRUE)
                     } else {
-                        log_message("--> WARNING: 'USUBJID' not found in the final dataset. Cannot enforce one-row-per-subject rule.")
+                        log_message("--> WARNING: 'usubjid' not found in the final dataset. Cannot enforce one-row-per-subject rule.")
                     }
                 }
                 
-                adam_data$datasets[[adam_spec$name]] <- final_df
+                adam_data$datasets[[current_adam_name]] <- final_df
                 log_message(sprintf("--- Successfully generated '%s' with %d rows and %d columns. ---",
                                     adam_spec$name, nrow(final_df), ncol(final_df)))
 
