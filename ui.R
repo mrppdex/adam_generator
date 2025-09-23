@@ -1,97 +1,100 @@
 # ui.R
-# Defines the user interface for the ADaM Generator Shiny App
+# Defines the User Interface for the ADaM Generator Shiny App
 
-# Required R packages for the app to run
-# Make sure to install them before launching:
-# install.packages(c("shiny", "shinythemes", "DT"))
+# Required R packages
+# install.packages("shiny", "shinythemes", "DT")
 
 library(shiny)
-library(shinythemes)
+library(shinythemes) # For professional-looking themes
+library(DT)
 
-# Define the user interface using a fluidPage layout
 shinyUI(fluidPage(
-    # Use the "Sandstone" theme for a clean, professional look
-    theme = shinytheme("sandstone"),
-
-    # Application title panel
-    titlePanel(
-        windowTitle = "ADaM Generator",
-        title = div(
-            img(src = "https://www.cdisc.org/sites/default/files/cdisc-logo-color.png", height = 50, style = "margin-right: 20px;"),
-            "ADaM Dataset Generator from Specification"
-        )
+    # Apply a dark theme similar to the drawing board
+    theme = shinytheme("cyborg"),
+    
+    # Custom CSS for a more polished look
+    tags$head(
+        tags$style(HTML("
+            body {
+                font-family: 'Inter', sans-serif;
+            }
+            .navbar-brand {
+                font-weight: 600;
+            }
+            .well {
+                background-color: #2a2a2a;
+                border: 1px solid #444;
+            }
+            .btn-primary {
+                background-color: #4f46e5;
+                border-color: #4f46e5;
+            }
+            .btn-primary:hover {
+                background-color: #4338ca;
+                border-color: #4338ca;
+            }
+            .nav-tabs > li.active > a, .nav-tabs > li.active > a:hover, .nav-tabs > li.active > a:focus {
+                background-color: #2a2a2a;
+                border-color: #444;
+            }
+            #log_output {
+                background-color: #1e1e1e;
+                border: 1px solid #444;
+                color: #d4d4d4;
+                font-family: 'Fira Code', monospace;
+                font-size: 0.85em;
+                white-space: pre-wrap;
+                word-wrap: break-word;
+                height: 300px;
+                padding: 10px;
+            }
+        "))
     ),
 
-    # Sidebar layout with input and output definitions
+    # Application Title
+    titlePanel("ADaM Dataset Generator"),
+
+    # Sidebar layout similar to the drawing board
     sidebarLayout(
-        # Sidebar panel for user inputs
+        # Sidebar Panel for Inputs
         sidebarPanel(
+            width = 3,
             h4("1. Upload Specification"),
-            # Input for uploading the YAML specification file
-            fileInput("spec_file", "Upload Mapping Specification (.yml or .yaml)",
-                      accept = c(".yaml", ".yml"),
-                      placeholder = "No spec file selected"),
-
+            fileInput("spec_file", "Upload YAML Spec File (.yml)",
+                      accept = c(".yml", ".yaml")),
+            
             hr(),
-
-            h4("2. Upload Source Data"),
-            # Input for uploading multiple SDTM datasets
-            fileInput("sdtm_files", "Upload All Required SDTM Datasets (.csv or .xpt)",
+            
+            h4("2. Upload SDTM Data"),
+            fileInput("sdtm_files", "Upload SDTM Datasets (.csv, .xpt)",
                       multiple = TRUE,
-                      accept = c(".csv", ".xpt"),
-                      placeholder = "No data files selected"),
-
+                      accept = c(".csv", ".xpt", "text/csv", "application/x-sas-xport")),
+            
             hr(),
 
             h4("3. Generate Datasets"),
-            # Action button to trigger the ADaM generation process
-            # Using a button prevents the app from re-calculating on every file change
-            actionButton("generate_btn", "Generate ADaM Datasets",
-                         icon = icon("cogs"),
-                         class = "btn-primary btn-lg btn-block"),
-
-            hr(),
-
-            # Informational text to guide the user
-            helpText("Instructions: Upload a YAML spec from the Drawing Board tool, then upload all necessary SDTM source datasets. Click the 'Generate' button to create the ADaM datasets based on the derivation logic in the spec.")
+            p("Once files are uploaded, click here to start processing.", class = "text-muted"),
+            actionButton("generate_btn", "Generate ADaM Datasets", 
+                         icon = icon("cogs"), class = "btn-primary btn-lg btn-block")
         ),
 
-        # Main panel for displaying outputs
+        # Main Panel for Outputs
         mainPanel(
-            # Organize outputs into tabs for clarity
+            width = 9,
             tabsetPanel(
                 id = "main_tabs",
-                # Tab 1: Welcome and instructions
-                tabPanel("Overview",
-                         icon = icon("info-circle"),
-                         h3("Welcome to the ADaM Generator"),
-                         p("This application automates the creation of ADaM datasets based on a formal specification file."),
-                         tags$ol(
-                             tags$li(strong("Upload Specification:"), " Provide the YAML file exported from the CDISC Drawing Board tool."),
-                             tags$li(strong("Upload Source Data:"), " Upload all the SDTM datasets (in .csv or .xpt format) that are listed as sources in your specification."),
-                             tags$li(strong("Generate Datasets:"), " Click the button in the sidebar to start the process."),
-                             tags$li(strong("Review & Download:"), " The 'Generated ADaM Datasets' tab will populate with previews and download buttons for each successfully created dataset.")
-                         ),
-                         hr(),
-                         h4("Important Note on Derivation Logic"),
-                         p("The 'logic' for each derivation in the YAML file must be valid R code that can be executed by ",
-                           tags$code("dplyr::mutate()"), ". All source datasets will be joined together before the derivations are applied, so you can refer to columns from any source dataset directly by name."),
-                         p("Example logic: ", tags$code("case_when(AGE >= 65 ~ 'Y', TRUE ~ 'N')"))
+                # Tab for the processing log
+                tabPanel("Processing Log", 
+                         h3("Log"),
+                         verbatimTextOutput("log_output")
                 ),
-                # Tab 2: Dynamically generated outputs for ADaM datasets
-                tabPanel("Generated ADaM Datasets",
-                         icon = icon("table"),
-                         # This UI element will be populated by the server
+                # Tab for the generated ADaM datasets and download buttons
+                tabPanel("Generated ADaM Datasets", 
+                         h3("Results"),
                          uiOutput("adam_outputs")
-                ),
-                # Tab 3: Log viewer for status updates and error messages
-                tabPanel("Processing Log",
-                         icon = icon("terminal"),
-                         h4("Live Log"),
-                         # Shows a monospace text block with processing messages
-                         verbatimTextOutput("log_output", placeholder = TRUE)
                 )
             )
         )
     )
 ))
+
