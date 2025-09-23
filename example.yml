@@ -1,0 +1,156 @@
+# This is an example of a comprehensive YAML specification for generating ADaM datasets.
+# It can be used with the "CDISC SDTM to ADaM Mapping Tool" and the associated R Shiny processor.
+#
+# GENERAL STRUCTURE:
+# The file contains a single top-level list called 'datasets'. Each item in this list
+# represents either an SDTM source domain or an ADaM dataset to be created.
+
+datasets:
+  # --------------------------------------------------------------------------
+  # SECTION 1: SDTM SOURCE DOMAIN DEFINITIONS
+  #
+  # 'type: SDTM' identifies these as source data.
+  # The 'position' attribute is used by the visual mapping tool to place the dataset on the canvas.
+  # The 'columns' list defines the variables within the domain.
+  # --------------------------------------------------------------------------
+  - name: DM
+    type: SDTM
+    position: { left: 50, top: 100 }
+    columns:
+      - { name: STUDYID, desc: 'Study Identifier', key: true }
+      - { name: USUBJID, desc: 'Unique Subject Identifier', key: true }
+      - { name: SUBJID, desc: 'Subject Identifier for the Study', key: false }
+      - { name: SITEID, desc: 'Study Site Identifier', key: false }
+      - { name: AGE, desc: 'Age', key: false }
+      - { name: SEX, desc: 'Sex', key: false }
+      - { name: RACE, desc: 'Race', key: false }
+      - { name: ARM, desc: 'Description of Planned Arm', key: false }
+
+  - name: EX
+    type: SDTM
+    position: { left: 50, top: 350 }
+    columns:
+      - { name: STUDYID, desc: 'Study Identifier', key: true }
+      - { name: USUBJID, desc: 'Unique Subject Identifier', key: true }
+      - { name: EXTRT, desc: 'Name of Treatment', key: false }
+      - { name: EXDOSE, desc: 'Dose', key: false }
+      - { name: EXSTDTC, desc: 'Start Date/Time of Treatment', key: false }
+      - { name: EXENDTC, desc: 'End Date/Time of Treatment', key: false }
+
+  - name: VS
+    type: SDTM
+    position: { left: 50, top: 550 }
+    columns:
+      - { name: STUDYID, desc: 'Study Identifier', key: true }
+      - { name: USUBJID, desc: 'Unique Subject Identifier', key: true }
+      - { name: VSTESTCD, desc: 'Vital Signs Test Short Name', key: false }
+      - { name: VSORRES, desc: 'Result or Finding in Original Units', key: false }
+      - { name: VISITNUM, desc: 'Visit Number', key: false }
+      - { name: VSDTC, desc: 'Date/Time of Measurements', key: false }
+
+  # --------------------------------------------------------------------------
+  # SECTION 2: ADaM DATASET DEFINITIONS
+  #
+  # 'type: ADaM' identifies these as datasets to be generated.
+  # 'join_keys': Specifies which columns to use for merging the SDTM sources.
+  # 'one_row_per_subject': If true, ensures the final dataset has only one entry per USUBJID.
+  # --------------------------------------------------------------------------
+  - name: ADSL
+    type: ADaM
+    position: { left: 450, top: 200 }
+    join_keys: ['STUDYID', 'USUBJID']
+    one_row_per_subject: true
+    columns:
+      # --- Key Columns (usually direct maps or identifiers) ---
+      - { name: studyid, desc: 'Study Identifier', key: true, derivation: { logic: 'studyid', sources: ['DM.STUDYID'] } }
+      - { name: usubjid, desc: 'Unique Subject Identifier', key: true, derivation: { logic: 'usubjid', sources: ['DM.USUBJID'] } }
+
+      # --- Population Flag Example (Conditional Logic) ---
+      # This derives the Safety Population Flag (SAFFL).
+      # It checks if the subject has a non-missing treatment in the EX domain.
+      - name: saffl
+        desc: 'Safety Population Flag'
+        key: false
+        derivation:
+          description: "Flag subjects who have exposure data (i.e., were treated)."
+          logic: "ifelse(!is.na(ex_extrt), 'Y', 'N')"
+          sources: ['EX.EXTRT']
+
+      # --- Treatment and Demographic Variables (Direct Mapping) ---
+      # These are examples of direct mappings. The R logic is simply the name
+      # of the source column, prefixed with its domain name in lowercase.
+      - name: arm
+        desc: 'Description of Planned Arm'
+        key: false
+        derivation:
+          description: 'Direct map from DM.ARM'
+          logic: 'dm_arm'
+          sources: ['DM.ARM']
+      - name: age
+        desc: 'Age'
+        key: false
+        derivation:
+          description: 'Direct map from DM.AGE'
+          logic: 'dm_age'
+          sources: ['DM.AGE']
+      - name: sex
+        desc: 'Sex'
+        key: false
+        derivation:
+          description: 'Direct map from DM.SEX'
+          logic: 'dm_sex'
+          sources: ['DM.SEX']
+
+      # --- Internal Derivation Example ---
+      # This column (AGEGR1) is derived from another column (AGE) that was
+      # created *within this same ADSL dataset*. This shows how derivations
+      # can be chained together.
+      - name: agegr1
+        desc: 'Age Group 1'
+        key: false
+        derivation:
+          description: 'Categorize AGE into specified groups using case_when.'
+          logic: "case_when(age < 40 ~ '<40', age >= 40 & age < 65 ~ '40-64', age >= 65 ~ '>=65', TRUE ~ NA_character_)"
+          sources: ['ADSL.AGE'] # Note: The source is 'ADSL', not 'DM'.
+
+  - name: ADVS
+    type: ADaM
+    position: { left: 850, top: 400 }
+    join_keys: ['STUDYID', 'USUBJID']
+    one_row_per_subject: false # This is a BDS dataset, so subjects can have multiple rows.
+    columns:
+      - { name: studyid, desc: 'Study Identifier', key: true, derivation: { logic: 'studyid', sources: ['VS.STUDYID'] } }
+      - { name: usubjid, desc: 'Unique Subject Identifier', key: true, derivation: { logic: 'usubjid', sources: ['VS.USUBJID'] } }
+      - { name: arm, desc: 'Description of Planned Arm', key: false, derivation: { logic: 'dm_arm', sources: ['DM.ARM'] } }
+
+      # --- Parameter and Analysis Value Derivations ---
+      # These columns are typical for a BDS dataset. AVAL is derived from the
+      # original result in VS, and PARAM/PARAMCD are derived from VSTESTCD.
+      - name: paramcd
+        desc: 'Parameter Code'
+        key: false
+        derivation:
+          description: 'Short name for the parameter, from VSTESTCD.'
+          logic: 'vs_vstestcd'
+          sources: ['VS.VSTESTCD']
+      - name: param
+        desc: 'Parameter Description'
+        key: false
+        derivation:
+          description: 'A descriptive name for the parameter.'
+          logic: "case_when(vs_vstestcd == 'SYSBP' ~ 'Systolic Blood Pressure (mmHg)', vs_vstestcd == 'DIABP' ~ 'Diastolic Blood Pressure (mmHg)', TRUE ~ NA_character_)"
+          sources: ['VS.VSTESTCD']
+      - name: aval
+        desc: 'Analysis Value'
+        key: false
+        derivation:
+          description: 'The numeric analysis value, directly from the original result.'
+          logic: 'vs_vsorres'
+          sources: ['VS.VSORRES']
+      - name: visitnum
+        desc: 'Visit Number'
+        key: false
+        derivation:
+          description: 'Direct map from VS.VISITNUM'
+          logic: 'vs_visitnum'
+          sources: ['VS.VISITNUM']
