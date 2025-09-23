@@ -13,8 +13,6 @@ library(readr)
 library(DT)
 library(rlang)
 library(tools)
-library(arrow)
-library(coastr)
 
 # Define the server logic
 shinyServer(function(input, output, session) {
@@ -46,7 +44,6 @@ shinyServer(function(input, output, session) {
             
             tryCatch({
                 df <- switch(file_ext(file$name),
-                    "sas7bdat" = import_cluwe_data(file$datapath) %>% rename_all(tolower),
                     "csv" = read_csv(file$datapath, show_col_types = FALSE),
                     "xpt" = read_xpt(file$datapath)
                 )
@@ -97,20 +94,26 @@ shinyServer(function(input, output, session) {
                 current_adam_name <- adam_spec$name
                 log_message(sprintf("--- Generating: %s ---", current_adam_name))
 
-                # Identify all unique source domains from the spec
-                all_source_domains <- adam_spec$columns %>%
-                    map("derivation") %>%
-                    map("sources") %>%
-                    unlist() %>%
-                    map_chr(~ strsplit(.x, "\\.")[[1]][1]) %>%
-                    unique()
+                # **FIX**: Identify all required source COLUMNS from the derivations
+                required_cols_by_domain <- adam_spec$columns %>%
+                    map("derivation") %>% map("sources") %>% unlist() %>%
+                    # Keep only external sources
+                    discard(~ startsWith(.x, paste0(current_adam_name, "."))) %>%
+                    # Parse into a data frame of Domain and Column
+                    map_df(~ data.frame(source_str = .x)) %>%
+                    mutate(
+                        DOMAIN = toupper(str_extract(source_str, "^[^\\.]+")),
+                        COLUMN = str_extract(source_str, "(?<=\\.).*$")
+                    ) %>%
+                    # Group by domain and collect unique column names
+                    group_by(DOMAIN) %>%
+                    summarise(COLS = list(unique(COLUMN)), .groups = 'drop') %>%
+                    # Convert to a named list for easy access (e.g., list(DM = c("USUBJID", "AGE")))
+                    { set_names(.$COLS, .$DOMAIN) }
 
-                # Distinguish between external SDTM sources and internal ADaM sources (itself)
-                external_source_names <- setdiff(all_source_domains, current_adam_name)
-                
+                external_source_names <- names(required_cols_by_domain)
                 log_message(paste("Required external sources:", paste(external_source_names, collapse = ", ")))
                 
-                # Check if all required *external* source datasets have been uploaded
                 missing_sources <- setdiff(external_source_names, names(sdtm_data$datasets))
                 if (length(missing_sources) > 0) {
                     stop(paste("Missing required source data for:", paste(missing_sources, collapse = ", ")))
@@ -120,43 +123,39 @@ shinyServer(function(input, output, session) {
                     stop(paste("Specification for", current_adam_name, "does not list any external SDTM sources."))
                 }
 
-                # Find the most frequently mentioned external source to use as the base for the join.
-                all_external_sources_list <- adam_spec$columns %>%
-                    map("derivation") %>% map("sources") %>% unlist() %>%
-                    map_chr(~ strsplit(.x, "\\.")[[1]][1]) %>%
-                    keep(~ .x %in% external_source_names)
-
-                if (length(all_external_sources_list) == 0) {
-                   base_dataset_name <- external_source_names[1]
-                } else {
-                   base_dataset_name <- names(which.max(table(all_external_sources_list)))
-                }
-
+                # Determine base dataset for the join
+                base_dataset_name <- names(which.max(map_int(required_cols_by_domain, length)))
                 log_message(paste("Using", base_dataset_name, "as the base for joining."))
                 
-                merged_df <- sdtm_data$datasets[[base_dataset_name]]
+                # **FIX**: Start with the base dataset, pre-selecting only necessary columns
+                join_keys_spec <- adam_spec$join_keys
+                if (is.null(join_keys_spec) || length(join_keys_spec) == 0) {
+                    default_keys <- c("STUDYID", "USUBJID", "SUBJID", "SITEID")
+                    keys_to_use <- intersect(default_keys, names(sdtm_data$datasets[[base_dataset_name]]))
+                } else {
+                    keys_to_use <- join_keys_spec
+                }
                 
+                cols_to_select <- unique(c(keys_to_use, required_cols_by_domain[[base_dataset_name]]))
+                log_message(sprintf("Pre-selecting columns from %s: [%s]", base_dataset_name, paste(cols_to_select, collapse=", ")))
+
+                merged_df <- sdtm_data$datasets[[base_dataset_name]] %>%
+                    select(any_of(cols_to_select)) %>%
+                    distinct()
+
                 # Sequentially left_join the other required source datasets
                 other_sources <- setdiff(external_source_names, base_dataset_name)
                 if(length(other_sources > 0)) {
                   for (source in other_sources) {
-                      join_keys_spec <- adam_spec$join_keys
+                      cols_to_select_source <- unique(c(keys_to_use, required_cols_by_domain[[source]]))
+                      log_message(sprintf("Pre-selecting columns from %s: [%s]", source, paste(cols_to_select_source, collapse=", ")))
                       
-                      if (is.null(join_keys_spec) || length(join_keys_spec) == 0) {
-                          log_message("WARNING: 'join_keys' not specified in YAML. Defaulting to common CDISC keys.")
-                          default_keys <- c("STUDYID", "USUBJID", "SUBJID", "SITEID")
-                          keys_to_use <- intersect(default_keys, intersect(names(merged_df), names(sdtm_data$datasets[[source]])))
-                      } else {
-                          keys_to_use <- intersect(join_keys_spec, intersect(names(merged_df), names(sdtm_data$datasets[[source]])))
-                      }
-
-                      if (length(keys_to_use) == 0) {
-                          stop(sprintf("Cannot join '%s' with '%s'. No common keys found based on spec or defaults.",
-                                       base_dataset_name, source))
-                      }
+                      source_df_subset <- sdtm_data$datasets[[source]] %>%
+                          select(any_of(cols_to_select_source)) %>%
+                          distinct()
                       
                       log_message(sprintf("Joining with '%s' using keys: [%s]", source, paste(keys_to_use, collapse=", ")))
-                      merged_df <- left_join(merged_df, sdtm_data$datasets[[source]], by = keys_to_use)
+                      merged_df <- left_join(merged_df, source_df_subset, by = keys_to_use)
                   }
                 }
 
@@ -177,11 +176,9 @@ shinyServer(function(input, output, session) {
                     }
                 }
                 
-                # Select only the columns specified for the final dataset
                 final_adam_cols <- map_chr(adam_spec$columns, "name")
                 final_df <- derived_df %>% select(any_of(final_adam_cols))
 
-                # **FIX**: Handle one-row-per-subject requirement
                 if (!is.null(adam_spec$one_row_per_subject) && adam_spec$one_row_per_subject) {
                     log_message("Dataset is one-row-per-subject. Removing duplicate subject entries.")
                     if ("USUBJID" %in% names(final_df)) {
@@ -212,8 +209,7 @@ shinyServer(function(input, output, session) {
         map(names(adam_data$datasets), function(name) {
             fluidRow(column(12, h3(name),
                 downloadButton(paste0("download_", name), "Download as CSV"),
-                downloadButton(paste0("download_rds_", name), "Download as RDS"),
-                downloadButton(paste0("download_parquet_", name), "Download as Parquet"),
+                downloadButton(paste0("download_xpt_", name), "Download as XPT"),
                 hr(), DTOutput(paste0("table_", name)), hr()
             ))
         })
@@ -226,14 +222,9 @@ shinyServer(function(input, output, session) {
                 filename = function() { paste0(tolower(name), ".csv") },
                 content = function(file) { write_csv(adam_data$datasets[[name]], file) }
             )
-
-             output[[paste0("download_rds_", name)]] <- downloadHandler(
+            output[[paste0("download_xpt_", name)]] <- downloadHandler(
                 filename = function() { paste0(tolower(name), ".xpt") },
-                content = function(file) { write_rds(adam_data$datasets[[name]], file) }
-            )
-            output[[paste0("download_parquet_", name)]] <- downloadHandler(
-                filename = function() { paste0(tolower(name), ".xpt") },
-                content = function(file) { write_parquet(adam_data$datasets[[name]], file) }
+                content = function(file) { write_xpt(adam_data$datasets[[name]], file) }
             )
             output[[paste0("table_", name)]] <- renderDT({
                 datatable(adam_data$datasets[[name]], options = list(scrollX = TRUE, pageLength = 5), rownames = FALSE)
